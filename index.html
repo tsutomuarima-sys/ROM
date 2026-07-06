@@ -1,0 +1,223 @@
+<!--
+  スマホのカメラでQRコードを読み取り、Apps ScriptのJSON API(Code.gs)に
+  fetchで問い合わせて結果を表示する、通常のHTMLページです。
+
+  Apps ScriptのHtmlServiceで直接表示するとカメラ権限が働かないため、
+  GitHub Pages / Firebase Hosting / Netlify などの通常のHTTPSホスティングに
+  このファイル単体を配置してください。
+
+  下の API_URL を、Apps Scriptをデプロイして発行された /exec のURLに置き換えてください。
+-->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #111;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 8px 0 16px;
+    }
+    #reader-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 420px;
+      aspect-ratio: 1 / 1;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    #video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    #frame {
+      position: absolute;
+      inset: 12%;
+      border: 3px solid #4caf50;
+      border-radius: 12px;
+      pointer-events: none;
+    }
+    #status {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #aaa;
+      min-height: 20px;
+      text-align: center;
+    }
+    button {
+      margin-top: 12px;
+      padding: 10px 20px;
+      font-size: 15px;
+      border: none;
+      border-radius: 8px;
+      background: #4caf50;
+      color: #fff;
+    }
+    button:disabled { background: #555; }
+    #result {
+      width: 100%;
+      max-width: 420px;
+      margin-top: 16px;
+      background: #1e1e1e;
+      border-radius: 12px;
+      padding: 16px;
+      display: none;
+    }
+    #result table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    #result th, #result td {
+      text-align: left;
+      padding: 6px 8px;
+      border-bottom: 1px solid #333;
+      word-break: break-all;
+    }
+    #result th {
+      color: #9e9e9e;
+      width: 40%;
+      font-weight: normal;
+    }
+    #notfound {
+      color: #ff6b6b;
+    }
+  </style>
+</head>
+<body>
+  <h1>QRコード検索</h1>
+
+  <div id="reader-wrap">
+    <video id="video" playsinline muted></video>
+    <div id="frame"></div>
+  </div>
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <div id="status">カメラを起動しています…</div>
+  <button id="rescanBtn" style="display:none;">もう一度スキャン</button>
+
+  <div id="result"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script>
+    // Apps Scriptデプロイ後に発行される /exec のURLに置き換えてください
+    const API_URL = 'https://script.google.com/macros/s/XXXXXXXXXXXXXXXXXXXXXXXX/exec';
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const rescanBtn = document.getElementById('rescanBtn');
+
+    let scanning = true;
+    let stream = null;
+
+    async function startCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' }
+        });
+        video.srcObject = stream;
+        await video.play();
+        statusEl.textContent = 'QRコードをかざしてください';
+        requestAnimationFrame(tick);
+      } catch (err) {
+        statusEl.textContent = 'カメラを起動できませんでした: ' + err.message;
+      }
+    }
+
+    function tick() {
+      if (!scanning) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'dontInvert'
+        });
+
+        if (code && code.data) {
+          onScanned(code.data);
+          return;
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+
+    async function onScanned(value) {
+      scanning = false;
+      statusEl.textContent = '検索中: ' + value;
+      try {
+        const res = await fetch(API_URL + '?key=' + encodeURIComponent(value));
+        if (!res.ok) {
+          throw new Error('APIエラー (HTTP ' + res.status + ')');
+        }
+        const json = await res.json();
+        showResult(json);
+      } catch (err) {
+        showError(err);
+      }
+    }
+
+    function showResult(res) {
+      rescanBtn.style.display = 'inline-block';
+      resultEl.style.display = 'block';
+
+      if (!res.found) {
+        statusEl.textContent = '';
+        resultEl.innerHTML = '<div id="notfound">' +
+          (res.error ? res.error : '該当するデータが見つかりませんでした') +
+          '</div>';
+        return;
+      }
+
+      statusEl.textContent = '見つかりました (行 ' + res.row + ')';
+      let html = '<table>';
+      for (const key in res.data) {
+        html += '<tr><th>' + escapeHtml(key) + '</th><td>' + escapeHtml(res.data[key]) + '</td></tr>';
+      }
+      html += '</table>';
+      resultEl.innerHTML = html;
+    }
+
+    function showError(err) {
+      statusEl.textContent = 'エラー: ' + err.message;
+      rescanBtn.style.display = 'inline-block';
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    rescanBtn.addEventListener('click', () => {
+      resultEl.style.display = 'none';
+      resultEl.innerHTML = '';
+      rescanBtn.style.display = 'none';
+      scanning = true;
+      statusEl.textContent = 'QRコードをかざしてください';
+      requestAnimationFrame(tick);
+    });
+
+    startCamera();
+  </script>
+</body>
+</html>
