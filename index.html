@@ -160,9 +160,9 @@
   <script>
     // ↓ 実際のスプレッドシートに合わせて書き換えてください ------------------------
 
-    // スプレッドシートのURL(https://docs.google.com/spreadsheets/d/17znko9c0YL-gaqFny9IPZnkqTY1GjgstcPBz-2qx8bc/edit)の
+    // スプレッドシートのURL(https://docs.google.com/spreadsheets/d/【ここ】/edit)の
     // /d/ と /edit の間の文字列
-    const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
+    const SPREADSHEET_ID = '17znko9c0YL-gaqFny9IPZnkqTY1GjgstcPBz-2qx8bc';
 
     // 検索対象のシート名
     const SHEET_NAME = '詳細';
@@ -282,30 +282,41 @@
     function handleSheetResponse(response) {
       clearTimeout(pendingTimeout);
 
-      if (response.status === 'error') {
-        showError(response.errors.map((e) => e.detailed_message || e.message).join(' / '));
-        return;
+      try {
+        if (!response || response.status === 'error') {
+          const detail = response && response.errors
+            ? response.errors.map((e) => e.detailed_message || e.message).join(' / ')
+            : '不明なエラー';
+          showError('検索に失敗しました: ' + detail);
+          return;
+        }
+
+        const table = response.table;
+        if (!table || !table.cols) {
+          showError('スプレッドシートからの応答が想定と異なります。共有設定(リンクを知っている全員が閲覧可)とSPREADSHEET_ID/SHEET_NAMEを確認してください。');
+          return;
+        }
+
+        const rows = table.rows;
+        if (!rows || rows.length === 0) {
+          showResult('<div class="notfound">該当するデータが見つかりませんでした</div>');
+          return;
+        }
+
+        const row = rows[0];
+        let html = '<table>';
+        table.cols.forEach((col, idx) => {
+          const header = col.label || col.id;
+          if (EXCLUDE_HEADERS.includes(header)) return;
+          const cell = row.c[idx];
+          const value = cell ? (cell.f || cell.v || '') : '';
+          html += '<tr><th>' + escapeHtml(header) + '</th><td>' + escapeHtml(String(value)) + '</td></tr>';
+        });
+        html += '</table>';
+        showResult(html);
+      } catch (err) {
+        showError('結果の表示中にエラーが発生しました: ' + err.message);
       }
-
-      const cols = response.table.cols;
-      const rows = response.table.rows;
-
-      if (!rows || rows.length === 0) {
-        showResult('<div class="notfound">該当するデータが見つかりませんでした</div>');
-        return;
-      }
-
-      const row = rows[0];
-      let html = '<table>';
-      cols.forEach((col, idx) => {
-        const header = col.label || col.id;
-        if (EXCLUDE_HEADERS.includes(header)) return;
-        const cell = row.c[idx];
-        const value = cell ? (cell.f || cell.v || '') : '';
-        html += '<tr><th>' + escapeHtml(header) + '</th><td>' + escapeHtml(value) + '</td></tr>';
-      });
-      html += '</table>';
-      showResult(html);
     }
 
     function showResult(html) {
