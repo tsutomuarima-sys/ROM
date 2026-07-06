@@ -39,6 +39,21 @@
       font-size: 18px;
       margin: 8px 0 16px;
     }
+    #logo {
+      width: 72px;
+      height: 72px;
+      background: #fff;
+      border-radius: 16px;
+      padding: 8px;
+      box-sizing: border-box;
+      margin-top: 8px;
+    }
+    #logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
     #reader-wrap {
       position: relative;
       width: 100%;
@@ -136,6 +151,7 @@
   </style>
 </head>
 <body>
+  <div id="logo"><img src="logo.png" alt="ロゴ"></div>
   <h1>Ms ROM管理</h1>
 
   <div id="reader-wrap">
@@ -322,7 +338,7 @@
     function showResult(html) {
       statusEl.textContent = '';
       resultEl.innerHTML = html;
-      resultWrap.style.display = '';
+      resultWrap.style.display = 'block';
     }
 
     function showError(message) {
