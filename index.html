@@ -1,23 +1,27 @@
 <!--
-  スマホのカメラでQRコードを読み取り、読み取った値をクエリパラメータに載せて
-  Apps ScriptのURL(Code.gs)へページ全体を遷移させる、通常のHTMLページです。
+  スマホのカメラでQRコードを読み取り、読み取った値でGoogleスプレッドシートを
+  直接検索して、その場に結果を表示する単体のHTMLページです。
 
-  結果表示はApps Script側(HTMLページ)が行います。バックグラウンド通信(fetch/JSONP)
-  にはしていません。このGoogleアカウントのWebアプリ公開設定が「Googleアカウントが
-  必要」に限定されており、外部サイトからのバックグラウンド通信だとiOS SafariのITP
-  (サードパーティCookieブロック)でログインCookieが送られず失敗するためです。
-  ページ全体の遷移(通常のブラウザナビゲーション)であればこの制約を受けません。
+  経緯:
+  以前はApps Script側で検索・表示を行い、読み取り後にページ全体をApps ScriptのURLへ
+  遷移させる方式でした。しかしこのGoogleアカウント(Workspace)ではWebアプリの公開範囲を
+  「全員(匿名可)」にできず「Googleアカウントを持つ全員」までしか選べないため、
+  組織外のGoogleアカウント(同僚の別アカウントなど)だとログインが通らず失敗することが
+  ありました。
 
-  Apps ScriptのHtmlServiceで直接カメラを表示するとカメラ権限が働かないため、
-  GitHub Pages / Firebase Hosting / Netlify などの通常のHTTPSホスティングに
-  このファイル単体を配置してください。
+  そこでApps Scriptをやめ、スプレッドシートを「リンクを知っている全員が閲覧可」に
+  共有した上で、Googleスプレッドシートの公開クエリ機能(gviz/tq API)を
+  <script>タグ経由(JSONP)でこのページから直接呼び出す方式にしました。
+  <script>タグでの読み込みはCORSの制約を受けないため、ログイン不要・Apps Script不要で
+  誰でもそのまま結果を見られます。
 
-  下の API_URL を、Apps Scriptをデプロイして発行された /exec のURLに置き換えてください。
+  下の設定(SPREADSHEET_ID など)を、あなたのスプレッドシートに合わせて書き換えてください。
 -->
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -94,6 +98,41 @@
       margin-top: 0;
       white-space: nowrap;
     }
+    #result-wrap {
+      display: none;
+      width: 100%;
+      max-width: 420px;
+    }
+    #result {
+      width: 100%;
+      background: #1e1e1e;
+      border-radius: 12px;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    #result table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    #result th, #result td {
+      text-align: left;
+      padding: 6px 8px;
+      border-bottom: 1px solid #333;
+      word-break: break-all;
+    }
+    #result th {
+      color: #9e9e9e;
+      width: 40%;
+      font-weight: normal;
+    }
+    #result .notfound {
+      color: #ff6b6b;
+    }
+    #rescan-button {
+      width: 100%;
+      max-width: 420px;
+    }
   </style>
 </head>
 <body>
@@ -112,10 +151,29 @@
     <button type="submit">検索</button>
   </form>
 
+  <div id="result-wrap">
+    <div id="result"></div>
+    <button id="rescan-button" type="button">もう一度スキャン</button>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <script>
-    // Apps Scriptデプロイ後に発行される /exec のURLに置き換えてください
-    const API_URL = 'https://script.google.com/macros/s/AKfycbyaI-tujmgbAVOnaS6JVYl3s-nE9eMGQG4sonzAItClZ1S_3SUlXqL1NyeuNjw_s4Ps/exec';
+    // ↓ 実際のスプレッドシートに合わせて書き換えてください ------------------------
+
+    // スプレッドシートのURL(https://docs.google.com/spreadsheets/d/17znko9c0YL-gaqFny9IPZnkqTY1GjgstcPBz-2qx8bc/edit)の
+    // /d/ と /edit の間の文字列
+    const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
+
+    // 検索対象のシート名
+    const SHEET_NAME = 'シート1';
+
+    // 検索キーが入っている列のアルファベット(A列なら'A')
+    const KEY_COLUMN = 'A';
+
+    // 結果に表示しない列のヘッダー名(社外に見せたくない列など)
+    const EXCLUDE_HEADERS = ['内部メモ'];
+
+    // ---------------------------------------------------------------------------
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -123,8 +181,12 @@
     const statusEl = document.getElementById('status');
     const manualForm = document.getElementById('manual');
     const manualInput = document.getElementById('manualInput');
+    const resultWrap = document.getElementById('result-wrap');
+    const resultEl = document.getElementById('result');
+    const rescanButton = document.getElementById('rescan-button');
 
     let scanning = true;
+    let pendingTimeout = null;
 
     async function startCamera() {
       try {
@@ -166,17 +228,102 @@
 
     function onScanned(value) {
       scanning = false;
-      statusEl.textContent = '検索中: ' + value;
-      // fetch/JSONPではなくページ全体を遷移させる(理由は先頭コメント参照)
-      location.href = API_URL + '?key=' + encodeURIComponent(value);
+      lookup(value);
     }
 
     manualForm.addEventListener('submit', (e) => {
       e.preventDefault();
       const value = manualInput.value.trim();
       if (!value) return;
-      onScanned(value);
+      scanning = false;
+      lookup(value);
     });
+
+    rescanButton.addEventListener('click', () => {
+      resultWrap.style.display = 'none';
+      document.getElementById('reader-wrap').style.display = '';
+      manualForm.style.display = '';
+      manualInput.value = '';
+      scanning = true;
+      statusEl.textContent = 'QRコードをかざしてください';
+      requestAnimationFrame(tick);
+    });
+
+    function lookup(key) {
+      statusEl.textContent = '検索中: ' + key;
+      document.getElementById('reader-wrap').style.display = 'none';
+      manualForm.style.display = 'none';
+
+      const escapedKey = key.replace(/'/g, "''");
+      const tq = "select * where " + KEY_COLUMN + " = '" + escapedKey + "'";
+      const params = new URLSearchParams({
+        tqx: 'out:json;responseHandler:handleSheetResponse',
+        sheet: SHEET_NAME,
+        tq: tq
+      });
+      const url = 'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID +
+        '/gviz/tq?' + params.toString();
+
+      const old = document.getElementById('gviz-script');
+      if (old) old.remove();
+
+      clearTimeout(pendingTimeout);
+      pendingTimeout = setTimeout(() => {
+        showError('通信がタイムアウトしました。スプレッドシートの共有設定(リンクを知っている全員が閲覧可)を確認してください。');
+      }, 10000);
+
+      const script = document.createElement('script');
+      script.id = 'gviz-script';
+      script.src = url;
+      script.onerror = () => showError('通信エラーが発生しました');
+      document.body.appendChild(script);
+    }
+
+    function handleSheetResponse(response) {
+      clearTimeout(pendingTimeout);
+
+      if (response.status === 'error') {
+        showError(response.errors.map((e) => e.detailed_message || e.message).join(' / '));
+        return;
+      }
+
+      const cols = response.table.cols;
+      const rows = response.table.rows;
+
+      if (!rows || rows.length === 0) {
+        showResult('<div class="notfound">該当するデータが見つかりませんでした</div>');
+        return;
+      }
+
+      const row = rows[0];
+      let html = '<table>';
+      cols.forEach((col, idx) => {
+        const header = col.label || col.id;
+        if (EXCLUDE_HEADERS.includes(header)) return;
+        const cell = row.c[idx];
+        const value = cell ? (cell.f || cell.v || '') : '';
+        html += '<tr><th>' + escapeHtml(header) + '</th><td>' + escapeHtml(value) + '</td></tr>';
+      });
+      html += '</table>';
+      showResult(html);
+    }
+
+    function showResult(html) {
+      statusEl.textContent = '';
+      resultEl.innerHTML = html;
+      resultWrap.style.display = '';
+    }
+
+    function showError(message) {
+      showResult('<div class="notfound">' + escapeHtml(message) + '</div>');
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
 
     startCamera();
   </script>
