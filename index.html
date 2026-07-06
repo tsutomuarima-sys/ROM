@@ -67,6 +67,27 @@
       color: #fff;
     }
     button:disabled { background: #555; }
+    #manual {
+      margin-top: 16px;
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      max-width: 420px;
+    }
+    #manual input {
+      flex: 1;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #1e1e1e;
+      color: #eee;
+      font-size: 15px;
+      min-width: 0;
+    }
+    #manual button {
+      margin-top: 0;
+      white-space: nowrap;
+    }
     #result {
       width: 100%;
       max-width: 420px;
@@ -109,6 +130,11 @@
   <div id="status">カメラを起動しています…</div>
   <button id="rescanBtn" style="display:none;">もう一度スキャン</button>
 
+  <form id="manual">
+    <input id="manualInput" type="text" placeholder="うまく読み取れない場合はコードを直接入力" autocapitalize="off" autocomplete="off">
+    <button type="submit">検索</button>
+  </form>
+
   <div id="result"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -122,6 +148,8 @@
     const statusEl = document.getElementById('status');
     const resultEl = document.getElementById('result');
     const rescanBtn = document.getElementById('rescanBtn');
+    const manualForm = document.getElementById('manual');
+    const manualInput = document.getElementById('manualInput');
 
     let scanning = true;
     let stream = null;
@@ -129,11 +157,15 @@
     async function startCamera() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' }
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
         });
         video.srcObject = stream;
         await video.play();
-        statusEl.textContent = 'QRコードをかざしてください';
+        statusEl.textContent = 'QRコードをかざしてください (' + video.videoWidth + 'x' + video.videoHeight + ')';
         requestAnimationFrame(tick);
       } catch (err) {
         statusEl.textContent = 'カメラを起動できませんでした: ' + err.message;
@@ -149,7 +181,7 @@
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(imageData.data, imageData.width, imageData.height, {
-          inversionAttempts: 'dontInvert'
+          inversionAttempts: 'attemptBoth'
         });
 
         if (code && code.data) {
@@ -215,6 +247,14 @@
       scanning = true;
       statusEl.textContent = 'QRコードをかざしてください';
       requestAnimationFrame(tick);
+    });
+
+    manualForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const value = manualInput.value.trim();
+      if (!value) return;
+      scanning = false;
+      onScanned(value);
     });
 
     startCamera();
